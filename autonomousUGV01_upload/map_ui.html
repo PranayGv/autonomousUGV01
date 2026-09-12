@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UGV01 Maps</title>
+<style>
+  :root{--bg:#0f1115;--panel:#181b22;--panel2:#20242e;--line:#2a2f3a;--txt:#e6e9ef;
+        --muted:#9aa3b2;--accent:#4f8cff;--teal:#2dd4bf;--ok:#22c55e;--danger:#ef4444;--warn:#f59e0b;}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--txt)}
+  header{padding:14px 18px;border-bottom:1px solid var(--line);background:var(--panel);display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+  header h1{font-size:16px;margin:0;font-weight:600}
+  .badge{margin-left:auto;display:flex;gap:8px;align-items:center;font-size:13px}
+  .dot{width:10px;height:10px;border-radius:50%;background:var(--muted);display:inline-block}
+  .dot.on{background:var(--ok)} .dot.off{background:var(--danger)}
+  main{max-width:820px;margin:0 auto;padding:16px;display:flex;flex-direction:column;gap:16px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px}
+  .card h2{font-size:13px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);margin:0 0 12px}
+  input,button,select{font:inherit;color:var(--txt);border-radius:8px;border:1px solid var(--line);background:var(--panel2);padding:9px 11px}
+  input:focus,select:focus{outline:1px solid var(--accent)}
+  button{cursor:pointer;transition:.12s} button:hover{border-color:var(--accent);background:#262b36}
+  button:disabled{opacity:.4;cursor:not-allowed}
+  button:active:not(:disabled){transform:translateY(1px)}
+  .accent{background:linear-gradient(180deg,#3a6fd8,#2f5fc0);border-color:#3a6fd8}
+  .teal{border-color:#1f5f57;color:var(--teal)} .danger{border-color:#5a2626;color:var(--danger)}
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .grow{flex:1}
+  .muted{color:var(--muted);font-size:13px}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th,td{text-align:left;padding:9px 8px;border-bottom:1px solid var(--line)}
+  th{color:var(--muted);font-weight:500;font-size:12px;text-transform:uppercase;letter-spacing:.4px}
+  td.actions{text-align:right;white-space:nowrap}
+  .pill{padding:6px 10px;font-size:13px}
+  .statebar{display:flex;gap:14px;align-items:center;flex-wrap:wrap;font-size:14px}
+  .tag{padding:3px 9px;border-radius:999px;font-size:12px;border:1px solid var(--line);background:var(--panel2)}
+  .tag.slam{color:var(--teal);border-color:#1f5f57} .tag.localize{color:var(--accent);border-color:#3a6fd8}
+  #toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);background:#20242e;border:1px solid var(--line);
+         padding:10px 16px;border-radius:10px;font-size:13px;max-width:90%;opacity:0;transition:.2s;pointer-events:none}
+  #toast.show{opacity:1}
+  .hint{font-size:12px;color:var(--muted);line-height:1.6;margin-top:6px}
+  code{color:var(--teal)}
+</style>
+</head>
+<body>
+<header>
+  <h1>🗺️ UGV01 Maps</h1>
+  <div class="badge"><span id="dot" class="dot off"></span><span id="stateTxt">checking…</span></div>
+</header>
+
+<main>
+  <!-- STACK CONTROL -->
+  <section class="card">
+    <h2>Navigation stack</h2>
+    <div class="statebar">
+      <span>Status:</span>
+      <span id="modeTag" class="tag">stopped</span>
+      <span id="mapTag" class="muted"></span>
+      <span id="upTag" class="muted"></span>
+    </div>
+    <div class="row" style="margin-top:14px">
+      <button id="btnSlam" class="teal pill" onclick="start('slam')">▶ Start SLAM (new map)</button>
+      <button id="btnStop" class="danger pill" onclick="stop()">■ Stop</button>
+    </div>
+    <p class="hint">SLAM = drive around building a fresh map (then save it below).
+      Localization is started from a specific map in the list. Setting a goal in RViz
+      (“2D Goal Pose”) is what makes the robot move — starting the stack alone does not.</p>
+  </section>
+
+  <!-- SAVE CURRENT MAP -->
+  <section class="card">
+    <h2>Save current map</h2>
+    <div class="row">
+      <input id="saveName" class="grow" placeholder="map name (e.g. lab_floor2)" spellcheck="false">
+      <button id="btnSave" class="accent pill" onclick="saveMap()">💾 Save</button>
+    </div>
+    <p class="hint">Enabled while a <b>SLAM</b> stack is running. <b>Drive the robot around
+      first</b> (RViz “2D Goal Pose”) until the map appears in RViz — slam_toolbox has
+      nothing to save until it has built a map. Saves a relocalization map
+      (<code>.posegraph</code>) plus an occupancy grid (<code>.pgm/.yaml</code>).</p>
+  </section>
+
+  <!-- SAVED MAPS -->
+  <section class="card">
+    <h2>Saved maps</h2>
+    <table>
+      <thead><tr><th>Name</th><th>Size</th><th>Saved</th><th></th></tr></thead>
+      <tbody id="mapRows"><tr><td colspan="4" class="muted">loading…</td></tr></tbody>
+    </table>
+  </section>
+</main>
+
+<div id="toast"></div>
+
+<script>
+let ST = {running:false, mode:null, map:null};
+
+function toast(msg, err){
+  const t = document.getElementById("toast");
+  t.textContent = msg; t.style.borderColor = err ? "var(--danger)" : "var(--line)";
+  t.classList.add("show"); clearTimeout(t._h);
+  t._h = setTimeout(()=>t.classList.remove("show"), 3200);
+}
+async function api(path, body){
+  const opt = body ? {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)} : {};
+  const r = await fetch(path, opt); return r.json();
+}
+function renderStatus(s){
+  ST = s;
+  document.getElementById("dot").className = "dot " + (s.running ? "on" : "off");
+  document.getElementById("stateTxt").textContent =
+    s.running ? (s.mode==="slam" ? "mapping" : "localizing") : "stopped";
+  const tag = document.getElementById("modeTag");
+  tag.textContent = s.running ? (s.mode==="slam" ? "SLAM (mapping)" : "LOCALIZING") : "stopped";
+  tag.className = "tag " + (s.running ? (s.mode||"") : "");
+  document.getElementById("mapTag").textContent = s.map ? ("map: " + s.map) : "";
+  document.getElementById("upTag").textContent = s.running && s.uptime ? (s.uptime + "s up") : "";
+  document.getElementById("btnSlam").disabled = s.running;
+  document.getElementById("btnStop").disabled = !s.running;
+  document.getElementById("btnSave").disabled = !(s.running && s.mode==="slam");
+}
+function renderMaps(maps){
+  const tb = document.getElementById("mapRows");
+  if(!maps.length){ tb.innerHTML = '<tr><td colspan="4" class="muted">No maps yet — start SLAM, drive around, then Save.</td></tr>'; return; }
+  tb.innerHTML = "";
+  for(const m of maps){
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td><b>${m.name}</b> ${m.grid?'':'<span class="muted">(no grid)</span>'}</td>
+      <td class="muted">${m.kb} kB</td><td class="muted">${m.mtime}</td>
+      <td class="actions">
+        <button class="pill accent" ${ST.running?'disabled':''} onclick="localize('${m.name}')">📍 Localize</button>
+        <button class="pill danger" ${ST.running?'disabled':''} onclick="del('${m.name}')">🗑</button>
+      </td>`;
+    tb.appendChild(tr);
+  }
+}
+async function refresh(){
+  try{ const d = await api("/api/maps"); renderStatus(d.status); renderMaps(d.maps); }
+  catch(e){ document.getElementById("stateTxt").textContent = "backend offline"; }
+}
+async function start(mode, name){
+  toast("starting " + mode + "…");
+  const d = await api("/api/start", {mode, name});
+  renderStatus(d.status); toast(d.msg, !d.ok); refresh();
+}
+function localize(name){
+  if(ST.running){ toast("stop the current stack first", true); return; }
+  start("localize", name);
+}
+async function stop(){
+  toast("stopping…"); const d = await api("/api/stop", {});
+  renderStatus(d.status); toast(d.msg, !d.ok); refresh();
+}
+async function saveMap(){
+  const name = document.getElementById("saveName").value.trim();
+  if(!name){ toast("enter a map name", true); return; }
+  toast("saving '" + name + "'…");
+  const d = await api("/api/save", {name});
+  toast(d.ok ? ("saved '"+name+"'") : ("save failed: "+d.msg), !d.ok);
+  refresh();
+}
+async function del(name){
+  if(!confirm("Delete map '"+name+"'?")) return;
+  const d = await api("/api/delete", {name});
+  toast(d.msg, !d.ok); refresh();
+}
+refresh(); setInterval(refresh, 3000);
+</script>
+</body>
+</html>
